@@ -3,8 +3,6 @@ import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 import datetime
-import json
-import re
 import os
 
 # ---------- 配置 ----------
@@ -12,7 +10,7 @@ DINGTALK_WEBHOOK = os.environ.get('DINGTALK_WEBHOOK')  # 仓库Secrets中配置
 KEYWORD = "热点"
 MAX_ITEMS = 15
 
-# ---------- 工具函数 ----------
+# ---------- 微博 ----------
 def fetch_weibo_hot():
     url = "https://s.weibo.com/top/summary"
     headers = {
@@ -34,19 +32,18 @@ def fetch_weibo_hot():
         print("[微博] 未找到热搜表格")
         return []
 
-    rows = table.find_all("tr")[1:]  # 第一行是表头
+    rows = table.find_all("tr")[1:]
     for row in rows[:MAX_ITEMS]:
         td = row.find("td", attrs={"class": "td-02"})
         if td and td.a:
             title = td.a.get_text(strip=True)
             url_q = td.a.get("href")
             full_url = urllib.parse.urljoin("https://s.weibo.com", url_q)
-            # 只清理钉钉可能报错的特殊符号，保留 emoji 和常用标点
-            safe_title = re.sub(r'[<>#\$%&*]', '', title)
-            items.append((safe_title, full_url))
+            items.append((title, full_url))
     print(f"[微博] 抓取到 {len(items)} 条热搜")
     return items
 
+# ---------- B站 ----------
 def fetch_bilibili_hot():
     url = "https://www.bilibili.com/v/popular/rank/all"
     headers = {
@@ -74,6 +71,7 @@ def fetch_bilibili_hot():
     print(f"[B站] 抓取到 {len(items)} 条热榜")
     return items
 
+# ---------- Markdown 生成 ----------
 def generate_markdown(weibo_items, bilibili_items):
     md = f"关键字：{KEYWORD}\n\n"
 
@@ -93,6 +91,7 @@ def generate_markdown(weibo_items, bilibili_items):
 
     return md
 
+# ---------- 钉钉推送 ----------
 def send_to_dingtalk(content):
     if not DINGTALK_WEBHOOK:
         print("[钉钉] 未配置Webhook")
@@ -116,11 +115,6 @@ def send_to_dingtalk(content):
 def main():
     weibo_items = fetch_weibo_hot()
     bilibili_items = fetch_bilibili_hot()
-
-    if not weibo_items:
-        print("[微博] 没有抓到数据，推送内容中会标注0条")
-    if not bilibili_items:
-        print("[B站] 没有抓到数据")
 
     md = generate_markdown(weibo_items, bilibili_items)
     print("=== Generated Markdown Preview ===")
