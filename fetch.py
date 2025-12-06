@@ -1,151 +1,110 @@
-# fetch.py
-# 使用 XXAPI 获取微博热搜 + B站热门 → 推送钉钉  
-# 钉钉关键词：热点  
-# 依赖：requests  
-
-import os
-import time
-import datetime
-import re
 import requests
+from bs4 import BeautifulSoup
+import re
+from datetime import datetime
+import json
 
-DINGTALK_WEBHOOK = os.environ.get("DINGTALK_WEBHOOK")
-if not DINGTALK_WEBHOOK:
-    raise SystemExit("Error: environment variable DINGTALK_WEBHOOK not set")
+# ========== 配置区 ==========
+DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=你的access_token"
+KEYWORD = "热点"
+TOP_N = 15
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-}
+# ========== 工具函数 ==========
+def clean_title(title):
+    """
+    清洗标题，去掉 emoji、特殊符号，保留中文、英文、数字、常用标点
+    """
+    # 保留文字、数字、中文、英文和基本标点
+    pattern = re.compile(r'[^\u4e00-\u9fff\w\s.,:()?!-]')
+    return pattern.sub('', title).strip()
 
-def clean_text(text):
-    """清洗标题文本，去掉零宽字符、不可见字符等"""
-    if not text:
-        return ""
-    # 去掉零宽空格、特殊控制符
-    text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
-    # 去掉其他不可见控制字符
-    text = ''.join(c for c in text if c.isprintable())
-    # 替换连续空格为一个
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-def get_beijing_time_str():
-    """获取北京时间字符串"""
-    utc_now = datetime.datetime.utcnow()
-    bj_now = utc_now + datetime.timedelta(hours=8)
-    return bj_now.strftime("%Y-%m-%d %H:%M:%S")
-
-def fetch_weibo_top(n=15):
-    url = "https://v2.xxapi.cn/api/weibohot"
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        j = r.json()
-        if j.get("code") != 200 or "data" not in j:
-            print("Weibo API returned error:", j)
-            return []
-        data = j.get("data", [])
-        items = []
-        for it in data:
-            title = clean_text(it.get("title"))
-            link = it.get("url", "")
-            if title and link:
-                items.append({"title": title, "url": link.strip()})
-            if len(items) >= n:
-                break
-        return items
-    except Exception as e:
-        print("fetch_weibo_top error:", repr(e))
-        return []
-
-def fetch_bilibili_top(n=15):
-    api = "https://api.bilibili.com/x/web-interface/popular?ps=50"
-    try:
-        r = requests.get(api, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        j = r.json()
-        data = j.get("data", {})
-        cand = []
-        if isinstance(data, list):
-            cand = data
-        elif isinstance(data, dict):
-            cand = data.get("list") or data.get("archives") or data.get("result") or []
-        items = []
-        for it in cand:
-            title = clean_text(it.get("title") or it.get("name"))
-            bvid = it.get("bvid") or it.get("bvidStr")
-            url = ""
-            if bvid:
-                url = "https://www.bilibili.com/video/" + bvid
-            else:
-                url = it.get("arcurl") or it.get("url") or ""
-            if title:
-                items.append({"title": title, "url": url.strip()})
-            if len(items) >= n:
-                break
-        return items
-    except Exception as e:
-        print("fetch_bilibili_top error:", repr(e))
-        return []
-
-def build_markdown(weibo, bilibili):
-    parts = []
-    parts.append("关键字：热点\n")
-    # 微博部分
-    if weibo:
-        parts.append("# 微博热搜（Top {}）\n".format(len(weibo)))
-        for i, it in enumerate(weibo, 1):
-            parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
-    else:
-        parts.append("# 微博热搜（Top） — 获取失败 或 无数据\n")
-    # B站部分
-    parts.append("\n# B站热榜（Top {}）\n".format(len(bilibili)))
-    for i, it in enumerate(bilibili, 1):
-        parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
-    parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
-    return "\n\n".join(parts)
-
-def send_to_dingtalk(markdown_text, title="热搜更新"):
-    payload = {
+def send_to_dingtalk(content):
+    """
+    发送 Markdown 内容到钉钉
+    """
+    headers = {'Content-Type': 'application/json'}
+    data = {
         "msgtype": "markdown",
         "markdown": {
-            "title": title,
-            "text": markdown_text
+            "title": "热点推送",
+            "text": content
+        },
+        "at": {
+            "isAtAll": False
         }
     }
+    resp = requests.post(DINGTALK_WEBHOOK, headers=headers, data=json.dumps(data))
+    print(f"DingTalk send status: {resp.status_code}, response: {resp.text}")
+    if resp.status_code == 200:
+        result = resp.json()
+        if result.get("errcode") != 0:
+            print("注意：钉钉可能拦截消息，原因:", result.get("errmsg"))
+
+# ========== 微博热搜 ==========
+def fetch_weibo_top(n=TOP_N):
+    url = "https://s.weibo.com/top/summary"
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+    resp = requests.get(url, headers=headers, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items = []
     try:
-        r = requests.post(DINGTALK_WEBHOOK, json=payload, timeout=10)
-        print("DingTalk send status:", r.status_code, "response:", r.text)
-        return r.status_code == 200
+        trs = soup.select("table tbody tr")[0:n]
+        for tr in trs:
+            a_tag = tr.select_one("td a")
+            if a_tag:
+                title = clean_title(a_tag.text)
+                link = "https://s.weibo.com/weibo?q=" + requests.utils.quote(title)
+                items.append((title, link))
     except Exception as e:
-        print("send_to_dingtalk error:", repr(e))
-        return False
+        print("微博抓取异常:", e)
+    print(f"Fetched weibo items: {len(items)}")
+    for i, item in enumerate(items, 1):
+        print(f"W{i}. {item[0]} -> {item[1]}")
+    return items
 
-def main():
-    weibo = fetch_weibo_top(15)
-    bilibili = fetch_bilibili_top(15)
+# ========== B站热榜 ==========
+def fetch_bilibili_top(n=TOP_N):
+    url = "https://api.bilibili.com/x/web-interface/popular?ps=50"
+    resp = requests.get(url, timeout=10)
+    items = []
+    try:
+        data = resp.json()
+        for video in data['data']['list'][:n]:
+            title = clean_title(video['title'])
+            link = f"https://www.bilibili.com/video/{video['bvid']}"
+            items.append((title, link))
+    except Exception as e:
+        print("B站抓取异常:", e)
+    print(f"Fetched bilibili items: {len(items)}")
+    for i, item in enumerate(items, 1):
+        print(f"B{i}. {item[0]} -> {item[1]}")
+    return items
 
-    print(f"Fetched weibo items: {len(weibo)}")
-    if weibo:
-        for idx, it in enumerate(weibo[:5], 1):
-            print(f"  W{idx}. {it.get('title')} -> {it.get('url')}")
-    else:
-        print("  No weibo items.")
+# ========== 构建 Markdown ==========
+def build_markdown(weibo_items, bilibili_items):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    md = f"> 关键字：{KEYWORD}\n\n"
 
-    print(f"Fetched bilibili items: {len(bilibili)}")
-    for idx, it in enumerate(bilibili[:5], 1):
-        print(f"  B{idx}. {it.get('title')} -> {it.get('url')}")
+    md += f"# 微博热搜（Top {len(weibo_items)})\n\n"
+    for i, (title, link) in enumerate(weibo_items, 1):
+        md += f"{i}. [{title}]({link})  \n"
 
-    md = build_markdown(weibo, bilibili)
-    print("=== Generated Markdown Preview ===")
-    print(md[:3000])
+    md += f"\n# B站热榜（Top {len(bilibili_items)})\n\n"
+    for i, (title, link) in enumerate(bilibili_items, 1):
+        md += f"{i}. [{title}]({link})  \n"
 
-    ok = send_to_dingtalk(md, title="微博 + B站 热搜（Top）")
-    if not ok:
-        print("Failed to send DingTalk message")
-    else:
-        print("Send OK.")
+    md += f"\n> 更新时间：{now}"
+    return md
 
+# ========== 主流程 ==========
 if __name__ == "__main__":
-    main()
+    weibo_items = fetch_weibo_top()
+    bilibili_items = fetch_bilibili_top()
+    markdown = build_markdown(weibo_items, bilibili_items)
+    print("=== Generated Markdown Preview ===")
+    print(markdown)
+
+    # 发送到钉钉
+    send_to_dingtalk(markdown)
