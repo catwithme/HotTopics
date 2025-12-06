@@ -1,125 +1,151 @@
 # fetch.py
-import requests
-from bs4 import BeautifulSoup
-import urllib.parse
-import datetime
+# 使用 XXAPI 获取微博热搜 + B站热门 → 推送钉钉  
+# 钉钉关键词：热点  
+# 依赖：requests  
+
 import os
+import time
+import datetime
+import re
+import requests
 
-# ---------- 配置 ----------
-DINGTALK_WEBHOOK = os.environ.get('DINGTALK_WEBHOOK')  # 仓库Secrets中配置
-KEYWORD = "热点"
-MAX_ITEMS = 15
+DINGTALK_WEBHOOK = os.environ.get("DINGTALK_WEBHOOK")
+if not DINGTALK_WEBHOOK:
+    raise SystemExit("Error: environment variable DINGTALK_WEBHOOK not set")
 
-# ---------- 微博 ----------
-def fetch_weibo_hot():
-    url = "https://s.weibo.com/top/summary"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+}
+
+def clean_text(text):
+    """清洗标题文本，去掉零宽字符、不可见字符等"""
+    if not text:
+        return ""
+    # 去掉零宽空格、特殊控制符
+    text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
+    # 去掉其他不可见控制字符
+    text = ''.join(c for c in text if c.isprintable())
+    # 替换连续空格为一个
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def get_beijing_time_str():
+    """获取北京时间字符串"""
+    utc_now = datetime.datetime.utcnow()
+    bj_now = utc_now + datetime.timedelta(hours=8)
+    return bj_now.strftime("%Y-%m-%d %H:%M:%S")
+
+def fetch_weibo_top(n=15):
+    url = "https://v2.xxapi.cn/api/weibohot"
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        j = r.json()
+        if j.get("code") != 200 or "data" not in j:
+            print("Weibo API returned error:", j)
+            return []
+        data = j.get("data", [])
+        items = []
+        for it in data:
+            title = clean_text(it.get("title"))
+            link = it.get("url", "")
+            if title and link:
+                items.append({"title": title, "url": link.strip()})
+            if len(items) >= n:
+                break
+        return items
     except Exception as e:
-        print(f"[微博] 请求失败: {e}")
+        print("fetch_weibo_top error:", repr(e))
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    items = []
-
-    table = soup.find("table", attrs={"class": "list_table"})
-    if not table:
-        print("[微博] 未找到热搜表格")
-        return []
-
-    rows = table.find_all("tr")[1:]
-    for row in rows[:MAX_ITEMS]:
-        td = row.find("td", attrs={"class": "td-02"})
-        if td and td.a:
-            title = td.a.get_text(strip=True)
-            url_q = td.a.get("href")
-            full_url = urllib.parse.urljoin("https://s.weibo.com", url_q)
-            items.append((title, full_url))
-    print(f"[微博] 抓取到 {len(items)} 条热搜")
-    return items
-
-# ---------- B站 ----------
-def fetch_bilibili_hot():
-    url = "https://www.bilibili.com/v/popular/rank/all"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+def fetch_bilibili_top(n=15):
+    api = "https://api.bilibili.com/x/web-interface/popular?ps=50"
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
+        r = requests.get(api, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        j = r.json()
+        data = j.get("data", {})
+        cand = []
+        if isinstance(data, list):
+            cand = data
+        elif isinstance(data, dict):
+            cand = data.get("list") or data.get("archives") or data.get("result") or []
+        items = []
+        for it in cand:
+            title = clean_text(it.get("title") or it.get("name"))
+            bvid = it.get("bvid") or it.get("bvidStr")
+            url = ""
+            if bvid:
+                url = "https://www.bilibili.com/video/" + bvid
+            else:
+                url = it.get("arcurl") or it.get("url") or ""
+            if title:
+                items.append({"title": title, "url": url.strip()})
+            if len(items) >= n:
+                break
+        return items
     except Exception as e:
-        print(f"[B站] 请求失败: {e}")
+        print("fetch_bilibili_top error:", repr(e))
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    items = []
+def build_markdown(weibo, bilibili):
+    parts = []
+    parts.append("关键字：热点\n")
+    # 微博部分
+    if weibo:
+        parts.append("# 微博热搜（Top {}）\n".format(len(weibo)))
+        for i, it in enumerate(weibo, 1):
+            parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
+    else:
+        parts.append("# 微博热搜（Top） — 获取失败 或 无数据\n")
+    # B站部分
+    parts.append("\n# B站热榜（Top {}）\n".format(len(bilibili)))
+    for i, it in enumerate(bilibili, 1):
+        parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
+    parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
+    return "\n\n".join(parts)
 
-    for i, li in enumerate(soup.select("li.rank-item")[:MAX_ITEMS]):
-        a = li.find("a", class_="title")
-        if a:
-            title = a.get_text(strip=True)
-            href = a.get("href")
-            if not href.startswith("http"):
-                href = "https:" + href
-            items.append((title, href))
-    print(f"[B站] 抓取到 {len(items)} 条热榜")
-    return items
-
-# ---------- Markdown 生成 ----------
-def generate_markdown(weibo_items, bilibili_items):
-    md = f"关键字：{KEYWORD}\n\n"
-
-    # 微博
-    md += f"# 微博热搜（Top {len(weibo_items)}）\n\n"
-    for i, (title, url) in enumerate(weibo_items, 1):
-        md += f"{i}. [{title}]({url})  \n"
-
-    # B站
-    md += f"\n# B站热榜（Top {len(bilibili_items)}）\n\n"
-    for i, (title, url) in enumerate(bilibili_items, 1):
-        md += f"{i}. [{title}]({url})  \n"
-
-    # 更新时间（北京时间）
-    now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-    md += f"\n> 更新时间：{now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-
-    return md
-
-# ---------- 钉钉推送 ----------
-def send_to_dingtalk(content):
-    if not DINGTALK_WEBHOOK:
-        print("[钉钉] 未配置Webhook")
-        return
-
-    data = {
+def send_to_dingtalk(markdown_text, title="热搜更新"):
+    payload = {
         "msgtype": "markdown",
         "markdown": {
-            "title": f"{KEYWORD}热榜",
-            "text": content
+            "title": title,
+            "text": markdown_text
         }
     }
-
     try:
-        resp = requests.post(DINGTALK_WEBHOOK, json=data, timeout=10)
-        print(f"[钉钉] 发送状态: {resp.status_code}, 返回: {resp.text}")
+        r = requests.post(DINGTALK_WEBHOOK, json=payload, timeout=10)
+        print("DingTalk send status:", r.status_code, "response:", r.text)
+        return r.status_code == 200
     except Exception as e:
-        print(f"[钉钉] 发送异常: {e}")
+        print("send_to_dingtalk error:", repr(e))
+        return False
 
-# ---------- 主流程 ----------
 def main():
-    weibo_items = fetch_weibo_hot()
-    bilibili_items = fetch_bilibili_hot()
+    weibo = fetch_weibo_top(15)
+    bilibili = fetch_bilibili_top(15)
 
-    md = generate_markdown(weibo_items, bilibili_items)
+    print(f"Fetched weibo items: {len(weibo)}")
+    if weibo:
+        for idx, it in enumerate(weibo[:5], 1):
+            print(f"  W{idx}. {it.get('title')} -> {it.get('url')}")
+    else:
+        print("  No weibo items.")
+
+    print(f"Fetched bilibili items: {len(bilibili)}")
+    for idx, it in enumerate(bilibili[:5], 1):
+        print(f"  B{idx}. {it.get('title')} -> {it.get('url')}")
+
+    md = build_markdown(weibo, bilibili)
     print("=== Generated Markdown Preview ===")
-    print(md)
-    send_to_dingtalk(md)
+    print(md[:3000])
+
+    ok = send_to_dingtalk(md, title="微博 + B站 热搜（Top）")
+    if not ok:
+        print("Failed to send DingTalk message")
+    else:
+        print("Send OK.")
 
 if __name__ == "__main__":
     main()
