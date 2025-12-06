@@ -1,7 +1,8 @@
-# fetch_split.py
-# 修改说明：将微博热搜和B站热榜分开发送钉钉，便于排查钉钉内容安全拦截问题
-# 依赖：requests
-# 钉钉关键词：热点
+# fetch_weibo_one_by_one.py
+# 修改说明：
+# 1. 微博热搜 15 条拆分成 15 次发送，每次 1 条，间隔 5 秒
+# 2. 暂停 B 站推送
+# 3. 便于排查钉钉内容安全（430104）
 
 import os
 import time
@@ -19,7 +20,6 @@ HEADERS = {
 }
 
 def clean_text(text):
-    """清洗标题文本，去掉零宽字符、不可见字符等"""
     if not text:
         return ""
     text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
@@ -55,49 +55,13 @@ def fetch_weibo_top(n=15):
         print("fetch_weibo_top error:", repr(e))
         return []
 
-def fetch_bilibili_top(n=15):
-    api = "https://api.bilibili.com/x/web-interface/popular?ps=50"
-    try:
-        r = requests.get(api, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        j = r.json()
-        data = j.get("data", {})
-        cand = []
-        if isinstance(data, list):
-            cand = data
-        elif isinstance(data, dict):
-            cand = data.get("list") or data.get("archives") or data.get("result") or []
-        items = []
-        for it in cand:
-            title = clean_text(it.get("title") or it.get("name"))
-            bvid = it.get("bvid") or it.get("bvidStr")
-            url = ""
-            if bvid:
-                url = "https://www.bilibili.com/video/" + bvid
-            else:
-                url = it.get("arcurl") or it.get("url") or ""
-            if title:
-                items.append({"title": title, "url": url.strip()})
-            if len(items) >= n:
-                break
-        return items
-    except Exception as e:
-        print("fetch_bilibili_top error:", repr(e))
-        return []
+def build_markdown(item):
+    title = item.get("title")
+    url = item.get("url")
+    md = f"关键字：热点\n\n# 微博热搜单条\n1. [{title}]({url})\n\n> 更新时间：{get_beijing_time_str()}"
+    return md
 
-def build_markdown(platform_name, items):
-    parts = []
-    parts.append("关键字：热点\n")
-    if items:
-        parts.append(f"# {platform_name}（Top {len(items)}）\n")
-        for i, it in enumerate(items, 1):
-            parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
-    else:
-        parts.append(f"# {platform_name} — 获取失败或无数据\n")
-    parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
-    return "\n\n".join(parts)
-
-def send_to_dingtalk(markdown_text, title="热搜更新"):
+def send_to_dingtalk(markdown_text, title="微博热搜单条"):
     payload = {
         "msgtype": "markdown",
         "markdown": {
@@ -114,29 +78,17 @@ def send_to_dingtalk(markdown_text, title="热搜更新"):
         return False
 
 def main():
-    # 微博
-    weibo = fetch_weibo_top(15)
-    print(f"Fetched weibo items: {len(weibo)}")
-    for idx, it in enumerate(weibo[:5], 1):
-        print(f"  W{idx}. {it.get('title')} -> {it.get('url')}")
-    md_weibo = build_markdown("微博热搜", weibo)
-    ok_weibo = send_to_dingtalk(md_weibo, title="微博热搜（Top）")
-    if not ok_weibo:
-        print("Failed to send Weibo DingTalk message")
-    else:
-        print("Weibo Send OK.")
-
-    # B站
-    bilibili = fetch_bilibili_top(15)
-    print(f"Fetched bilibili items: {len(bilibili)}")
-    for idx, it in enumerate(bilibili[:5], 1):
-        print(f"  B{idx}. {it.get('title')} -> {it.get('url')}")
-    md_bilibili = build_markdown("B站热榜", bilibili)
-    ok_bilibili = send_to_dingtalk(md_bilibili, title="B站热榜（Top）")
-    if not ok_bilibili:
-        print("Failed to send Bilibili DingTalk message")
-    else:
-        print("Bilibili Send OK.")
+    weibo_items = fetch_weibo_top(15)
+    print(f"Fetched {len(weibo_items)} weibo items")
+    for idx, item in enumerate(weibo_items, 1):
+        print(f"Sending W{idx}: {item.get('title')}")
+        md = build_markdown(item)
+        ok = send_to_dingtalk(md)
+        if not ok:
+            print(f"Failed to send W{idx}: {item.get('title')}")
+        else:
+            print(f"W{idx} sent OK")
+        time.sleep(5)  # 间隔 5 秒
 
 if __name__ == "__main__":
     main()
