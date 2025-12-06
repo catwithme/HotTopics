@@ -5,6 +5,8 @@
 
 import os
 import time
+import datetime
+import re
 import requests
 
 DINGTALK_WEBHOOK = os.environ.get("DINGTALK_WEBHOOK")
@@ -15,6 +17,24 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 }
+
+def clean_text(text):
+    """清洗标题文本，去掉零宽字符、不可见字符等"""
+    if not text:
+        return ""
+    # 去掉零宽空格、特殊控制符
+    text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
+    # 去掉其他不可见控制字符
+    text = ''.join(c for c in text if c.isprintable())
+    # 替换连续空格为一个
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def get_beijing_time_str():
+    """获取北京时间字符串"""
+    utc_now = datetime.datetime.utcnow()
+    bj_now = utc_now + datetime.timedelta(hours=8)
+    return bj_now.strftime("%Y-%m-%d %H:%M:%S")
 
 def fetch_weibo_top(n=15):
     url = "https://v2.xxapi.cn/api/weibohot"
@@ -28,10 +48,10 @@ def fetch_weibo_top(n=15):
         data = j.get("data", [])
         items = []
         for it in data:
-            title = it.get("title")
-            link = it.get("url")
+            title = clean_text(it.get("title"))
+            link = it.get("url", "")
             if title and link:
-                items.append({"title": title.strip(), "url": link.strip()})
+                items.append({"title": title, "url": link.strip()})
             if len(items) >= n:
                 break
         return items
@@ -53,7 +73,7 @@ def fetch_bilibili_top(n=15):
             cand = data.get("list") or data.get("archives") or data.get("result") or []
         items = []
         for it in cand:
-            title = it.get("title") or it.get("name")
+            title = clean_text(it.get("title") or it.get("name"))
             bvid = it.get("bvid") or it.get("bvidStr")
             url = ""
             if bvid:
@@ -61,7 +81,7 @@ def fetch_bilibili_top(n=15):
             else:
                 url = it.get("arcurl") or it.get("url") or ""
             if title:
-                items.append({"title": title.strip(), "url": url.strip()})
+                items.append({"title": title, "url": url.strip()})
             if len(items) >= n:
                 break
         return items
@@ -76,18 +96,14 @@ def build_markdown(weibo, bilibili):
     if weibo:
         parts.append("# 微博热搜（Top {}）\n".format(len(weibo)))
         for i, it in enumerate(weibo, 1):
-            title = it.get("title", "").replace("\n", " ").strip()
-            url = it.get("url", "").strip()
-            parts.append(f"{i}. [{title}]({url})  ")
+            parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
     else:
         parts.append("# 微博热搜（Top） — 获取失败 或 无数据\n")
     # B站部分
     parts.append("\n# B站热榜（Top {}）\n".format(len(bilibili)))
     for i, it in enumerate(bilibili, 1):
-        title = it.get("title", "").replace("\n", " ").strip()
-        url = it.get("url", "").strip()
-        parts.append(f"{i}. [{title}]({url})  ")
-    parts.append("\n> 更新时间：{}".format(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
+        parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
+    parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
     return "\n\n".join(parts)
 
 def send_to_dingtalk(markdown_text, title="热搜更新"):
@@ -127,7 +143,7 @@ def main():
 
     ok = send_to_dingtalk(md, title="微博 + B站 热搜（Top）")
     if not ok:
-        raise SystemExit("Failed to send DingTalk message")
+        print("Failed to send DingTalk message")
     else:
         print("Send OK.")
 
