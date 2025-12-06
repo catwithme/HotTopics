@@ -1,0 +1,32 @@
+name: Hotrank
+
+on:
+  schedule:
+    # 每天北京时间 08:00 ~ 22:00 每 2 小时一次
+    # GitHub Actions 使用 UTC，需要减去8小时
+    - cron: '0 0,2,4,6,8,10,12,14 * * *'
+  workflow_dispatch:  # 支持手动触发测试
+
+jobs:
+  fetch-and-send:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Run fetch script
+        env:
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+        run: |
+          python fetch.py
