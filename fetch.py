@@ -3,11 +3,8 @@
 # 钉钉关键词：热点  
 # 依赖：requests, time
 # --- 核心改进：二分法审查、双 Webhook、异常推送、延迟控制、Markdown 健壮性 ---
-# --- V4.0 修改记录 (2025-12-07 12:58:30 BJT) ---
-# 1. 修改 fetch_weibo_top：实现微博热搜标题和链接的同步截断。
-#    - 如果标题包含空格（如 "XXX YYY"），则标题和链接搜索关键词均截断为 "XXX"。
-# 2. 修改 build_final_markdown：加入 Markdown 敏感字符转义 (escape_markdown)，提高输出健壮性。
-# 3. 新增辅助函数 escape_markdown。
+# --- V4.1 修改记录 (2025-12-07 13:00:30 BJT) ---
+# 1. 修复：移除第 24 行 AUDIT_DELAY_SECONDS = 1 后面的特殊不可见字符 U+00A0，解决 SyntaxError 报错。
 
 import os
 import time
@@ -21,7 +18,7 @@ DINGTALK_WEBHOOK = os.environ.get("DINGTALK_WEBHOOK")
 DINGTALK_WEBHOOK_TEST = os.environ.get("DINGTALK_WEBHOOK_TEST") # 新增测试 Webhook
 
 # 设置二分法测试之间的延迟（秒），防止触发钉钉的频率限制或消极反应
-AUDIT_DELAY_SECONDS = 1 
+AUDIT_DELAY_SECONDS = 1 # 修复了这里的特殊字符
 
 if not DINGTALK_WEBHOOK:
     raise SystemExit("Error: environment variable DINGTALK_WEBHOOK not set")
@@ -56,11 +53,10 @@ def escape_markdown(text):
     if not text:
         return ""
     # 转义 Markdown 字符 (转义 [ ] *)
-    # 注意：钉钉 Markdown 仅支持部分转义，这里主要针对链接格式的冲突
     return text.replace('[', '\[').replace(']', '\]').replace('*', '\*')
 
 
-# --- 消息发送核心逻辑 (V3.0 保持不变) ---
+# --- 消息发送核心逻辑 ---
 
 def _send_request(webhook_url, payload, is_test=False):
     """通用发送请求逻辑，用于生产和测试 Webhook"""
@@ -266,7 +262,7 @@ def build_audit_markdown(items, platform_name):
         parts.append(f"- {it['title']}") 
     return "\n".join(parts)
 
-# --- 核心审查：二分法逻辑 (V3.0 保持不变) ---
+# --- 核心审查：二分法逻辑 ---
 
 def test_content_audit(items, platform_name, test_webhook_url):
     
@@ -313,7 +309,7 @@ def test_content_audit(items, platform_name, test_webhook_url):
     print(f"--- {platform_name} 审查完成：保留 {len(safe_items)} 条 ---")
     return safe_items
 
-# --- 主逻辑 (V3.0 保持不变) ---
+# --- 主逻辑 ---
 
 def main():
     
