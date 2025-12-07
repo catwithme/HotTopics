@@ -3,11 +3,6 @@
 # 钉钉关键词：热点  
 # 依赖：requests, time
 # --- 核心改进：二分法审查、双 Webhook、异常推送、延迟控制 ---
-# --- V2.0 修改记录 (2025-12-07 12:45:54 BJT) ---
-# 1. 修改 fetch_weibo_top：实现微博热搜标题和链接的同步截断。
-#    - 如果标题包含空格（XXX YYY），则标题和链接搜索关键词均截断为 XXX。
-# 2. 修改 build_final_markdown：移除微博部分的标题截断逻辑（因为已在前一步完成）。
-# 3. 增强 build_final_markdown：添加 Markdown 敏感字符转义，提高健壮性。
 
 import os
 import time
@@ -34,10 +29,7 @@ HEADERS = {
 # --- 辅助函数 ---
 
 def clean_text(text):
-    """
-    清洗标题文本，去掉零宽字符、不可见字符等。
-    将连续空格合并为单个空格，用于后续的标题截取。
-    """
+    """清洗标题文本，去掉零宽字符、不可见字符等"""
     if not text:
         return ""
     # 去掉零宽空格、特殊控制符
@@ -54,7 +46,7 @@ def get_beijing_time_str():
     bj_now = utc_now + datetime.timedelta(hours=8)
     return bj_now.strftime("%Y-%m-%d %H:%M:%S")
 
-# --- 消息发送核心逻辑 (未修改) ---
+# --- 消息发送核心逻辑 ---
 
 def _send_request(webhook_url, payload, is_test=False):
     """通用发送请求逻辑，用于生产和测试 Webhook"""
@@ -114,15 +106,11 @@ def send_exception_report(title, error_detail):
     # 强制使用生产 webhook 进行异常报告
     return send_to_dingtalk(DINGTALK_WEBHOOK, markdown_text, title=f"⚠️ {title}", is_test=False)
 
-# --- 数据抓取 (核心修改 fetch_weibo_top) ---
+# --- 数据抓取 (保持不变) ---
 
 def fetch_weibo_top(n=15):
-    """
-    抓取微博热搜，并根据用户要求对标题和链接进行同步截断。
-    """
+    # ... (您的 fetch_weibo_top 代码)
     url = "https://v2.xxapi.cn/api/weibohot"
-    base_weibo_url = "https://s.weibo.com/weibo?q="
-    
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         r.raise_for_status()
@@ -132,38 +120,11 @@ def fetch_weibo_top(n=15):
             raise ValueError(f"Weibo API returned error: {j}")
         data = j.get("data", [])
         items = []
-        
         for it in data:
-            # 使用 clean_text 获取原始标题（保留单个空格）
-            original_title = clean_text(it.get("title")) 
-            original_link = it.get("url", "").strip()
-            
-            if original_title and original_link:
-                
-                # --- 核心同步截断逻辑 ---
-                if ' ' in original_title:
-                    # 标题包含空格，需要截断
-                    first_word = original_title.split(' ')[0] 
-                    
-                    # 1. 截断显示标题
-                    processed_title = first_word
-                    
-                    # 2. 截断链接的搜索关键词
-                    # 检查链接是否是标准的微博搜索链接
-                    if original_link.startswith(base_weibo_url):
-                        # 构造新的链接，只使用第一个词作为搜索关键词
-                        processed_link = f"{base_weibo_url}{first_word}"
-                    else:
-                        # 如果链接格式不符合预期，使用原始链接
-                        processed_link = original_link
-                        
-                else:
-                    # 标题不包含空格，使用原始数据
-                    processed_title = original_title
-                    processed_link = original_link
-                
-                items.append({"title": processed_title, "url": processed_link})
-                
+            title = clean_text(it.get("title"))
+            link = it.get("url", "")
+            if title and link:
+                items.append({"title": title, "url": link.strip()})
             if len(items) >= n:
                 break
         return items
@@ -172,7 +133,7 @@ def fetch_weibo_top(n=15):
         raise Exception(f"fetch_weibo_top error: {repr(e)}")
 
 def fetch_bilibili_top(n=15):
-    # B站部分保持不变，使用完整标题和链接
+    # ... (您的 fetch_bilibili_top 代码)
     api = "https://api.bilibili.com/x/web-interface/popular?ps=50"
     try:
         r = requests.get(api, headers=HEADERS, timeout=15)
@@ -186,7 +147,7 @@ def fetch_bilibili_top(n=15):
             cand = data.get("list") or data.get("archives") or data.get("result") or []
         items = []
         for it in cand:
-            title = clean_text(it.get("title") or it.get("name")) # 使用 clean_text (保留单个空格)
+            title = clean_text(it.get("title") or it.get("name"))
             bvid = it.get("bvid") or it.get("bvidStr")
             url = ""
             if bvid:
@@ -203,52 +164,26 @@ def fetch_bilibili_top(n=15):
         raise Exception(f"fetch_bilibili_top error: {repr(e)}")
 
 
-# --- Markdown 构建器 (已增强健壮性) ---
+# --- Markdown 构建器 ---
 
 def build_final_markdown(weibo, bilibili):
-    """
-    构建最终发送的合并 Markdown 报告。
-    微博数据的 title 和 url 已经在抓取阶段完成截断。
-    """
+    """构建最终发送的合并 Markdown 报告"""
     parts = []
     parts.append("关键字：热点\n")
-    
+    
     # 微博部分
     if weibo:
         parts.append("# 微博热搜（Top {}）\n".format(len(weibo)))
         for i, it in enumerate(weibo, 1):
-            title = it.get('title') # 已是截断后的标题
-            url = it.get('url') # 已是截断后的链接
-            
-            if not title or not url:
-                print(f"Warning: Weibo item {i} skipped due to missing title/URL: {it}")
-                continue
-            
-            # Markdown 字符转义 (转义 [ ] *)
-            title = title.replace('[', '\[').replace(']', '\]').replace('*', '\*')
-            
-            # 优化换行
-            parts.append(f"{i}. [{title}]({url})\n") 
-    
+            parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
+    
     # B站部分
     if bilibili:
         parts.append("\n# B站热榜（Top {}）\n".format(len(bilibili)))
         for i, it in enumerate(bilibili, 1):
-            title = it.get('title')
-            url = it.get('url')
-            
-            if not title or not url:
-                print(f"Warning: Bilibili item {i} skipped due to missing title/URL: {it}")
-                continue
-                
-            # Markdown 字符转义
-            title = title.replace('[', '\[').replace(']', '\]').replace('*', '\*')
-
-            # 优化换行
-            parts.append(f"{i}. [{title}]({url})\n")
-    
+            parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
+    
     parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
-    # 最终使用 \n\n.join 确保大的块之间有分隔
     return "\n\n".join(parts)
 
 
@@ -260,7 +195,7 @@ def build_audit_markdown(items, platform_name):
         parts.append(f"- {it['title']}") 
     return "\n".join(parts)
 
-# --- 核心审查：二分法逻辑 (未修改) ---
+# --- 核心审查：二分法逻辑 ---
 
 def test_content_audit(items, platform_name, test_webhook_url):
     
@@ -307,7 +242,7 @@ def test_content_audit(items, platform_name, test_webhook_url):
     print(f"--- {platform_name} 审查完成：保留 {len(safe_items)} 条 ---")
     return safe_items
 
-# --- 主逻辑 (未修改) ---
+# --- 主逻辑 ---
 
 def main():
     
