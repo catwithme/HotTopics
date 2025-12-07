@@ -154,7 +154,6 @@ def fetch_bilibili_top(n=15):
                 url = "https://www.bilibili.com/video/" + bvid
             else:
                 url = it.get("arcurl") or it.get("url") or ""
-            # 注意：此处在抓取时已经有一个基础的 title 检查，但 final_markdown 还会做二次检查
             if title:
                 items.append({"title": title, "url": url.strip()})
             if len(items) >= n:
@@ -165,10 +164,10 @@ def fetch_bilibili_top(n=15):
         raise Exception(f"fetch_bilibili_top error: {repr(e)}")
 
 
-# --- Markdown 构建器 (已增强健壮性) ---
+# --- Markdown 构建器 (已增强健壮性，新增转义和优化换行) ---
 
 def build_final_markdown(weibo, bilibili):
-    """构建最终发送的合并 Markdown 报告（增强数据健壮性）"""
+    """构建最终发送的合并 Markdown 报告（增强数据健壮性，并对标题进行转义）"""
     parts = []
     parts.append("关键字：热点\n")
     
@@ -181,13 +180,15 @@ def build_final_markdown(weibo, bilibili):
             
             # --- 核心健壮性检查 ---
             if not title or not url:
-                # 打印警告，并跳过该条不完整的条目，避免格式错误
                 print(f"Warning: Weibo item {i} skipped due to missing title/URL: {it}")
                 continue
-            # --------------------
             
-            # 使用获取到的 title 和 url 变量进行渲染
-            parts.append(f"{i}. [{title}]({url})  ")
+            # --- 新增：Markdown 字符转义 ---
+            # 转义 Markdown 敏感字符 [ ] *
+            title = title.replace('[', '\[').replace(']', '\]').replace('*', '\*')
+            
+            # --- 优化换行：移除行末双空格，改用 \n 确保解析一致性 ---
+            parts.append(f"{i}. [{title}]({url})\n") 
     
     # B站部分
     if bilibili:
@@ -198,15 +199,18 @@ def build_final_markdown(weibo, bilibili):
             
             # --- 核心健壮性检查 ---
             if not title or not url:
-                # 打印警告，并跳过该条不完整的条目，避免格式错误
                 print(f"Warning: Bilibili item {i} skipped due to missing title/URL: {it}")
                 continue
-            # --------------------
+                
+            # --- 新增：Markdown 字符转义 ---
+            # 转义 Markdown 敏感字符 [ ] *
+            title = title.replace('[', '\[').replace(']', '\]').replace('*', '\*')
 
-            # 使用获取到的 title 和 url 变量进行渲染
-            parts.append(f"{i}. [{title}]({url})  ")
+            # --- 优化换行：移除行末双空格，改用 \n 确保解析一致性 ---
+            parts.append(f"{i}. [{title}]({url})\n")
     
     parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
+    # 最终使用 \n\n.join 确保大的块之间有分隔
     return "\n\n".join(parts)
 
 
