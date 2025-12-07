@@ -2,7 +2,7 @@
 # 使用 XXAPI 获取微博热搜 + B站热门 → 推送钉钉  
 # 钉钉关键词：热点  
 # 依赖：requests, time
-# --- 核心改进：二分法审查、双 Webhook、异常推送、延迟控制 ---
+# --- 核心改进：二分法审查、双 Webhook、异常推送、延迟控制、Markdown 健壮性 ---
 
 import os
 import time
@@ -154,6 +154,7 @@ def fetch_bilibili_top(n=15):
                 url = "https://www.bilibili.com/video/" + bvid
             else:
                 url = it.get("arcurl") or it.get("url") or ""
+            # 注意：此处在抓取时已经有一个基础的 title 检查，但 final_markdown 还会做二次检查
             if title:
                 items.append({"title": title, "url": url.strip()})
             if len(items) >= n:
@@ -164,10 +165,10 @@ def fetch_bilibili_top(n=15):
         raise Exception(f"fetch_bilibili_top error: {repr(e)}")
 
 
-# --- Markdown 构建器 ---
+# --- Markdown 构建器 (已增强健壮性) ---
 
 def build_final_markdown(weibo, bilibili):
-    """构建最终发送的合并 Markdown 报告"""
+    """构建最终发送的合并 Markdown 报告（增强数据健壮性）"""
     parts = []
     parts.append("关键字：热点\n")
     
@@ -175,13 +176,35 @@ def build_final_markdown(weibo, bilibili):
     if weibo:
         parts.append("# 微博热搜（Top {}）\n".format(len(weibo)))
         for i, it in enumerate(weibo, 1):
-            parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
+            title = it.get('title')
+            url = it.get('url')
+            
+            # --- 核心健壮性检查 ---
+            if not title or not url:
+                # 打印警告，并跳过该条不完整的条目，避免格式错误
+                print(f"Warning: Weibo item {i} skipped due to missing title/URL: {it}")
+                continue
+            # --------------------
+            
+            # 使用获取到的 title 和 url 变量进行渲染
+            parts.append(f"{i}. [{title}]({url})  ")
     
     # B站部分
     if bilibili:
         parts.append("\n# B站热榜（Top {}）\n".format(len(bilibili)))
         for i, it in enumerate(bilibili, 1):
-            parts.append(f"{i}. [{it.get('title')}]({it.get('url')})  ")
+            title = it.get('title')
+            url = it.get('url')
+            
+            # --- 核心健壮性检查 ---
+            if not title or not url:
+                # 打印警告，并跳过该条不完整的条目，避免格式错误
+                print(f"Warning: Bilibili item {i} skipped due to missing title/URL: {it}")
+                continue
+            # --------------------
+
+            # 使用获取到的 title 和 url 变量进行渲染
+            parts.append(f"{i}. [{title}]({url})  ")
     
     parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
     return "\n\n".join(parts)
