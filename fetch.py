@@ -30,8 +30,8 @@ HEADERS = {
 
 def clean_text(text):
     """
-    清洗标题文本，去掉零宽字符、不可见字符等，并确保最终首尾无空格。
-    **已优化**：替换连续空格为单个空格。
+    清洗标题文本，去掉零宽字符、不可见字符等。
+    **核心修改**：强制移除标题中的所有空格。
     """
     if not text:
         return ""
@@ -39,9 +39,12 @@ def clean_text(text):
     text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
     # 去掉其他不可见控制字符
     text = ''.join(c for c in text if c.isprintable())
-    # 替换连续空格为一个（保留内容中的必要空格）
-    text = re.sub(r'\s+', ' ', text)
-    # 最终移除首尾空格
+    
+    # === 关键修改：移除所有空格（包括英文和中文空格） ===
+    text = text.replace(' ', '').replace('　', '') 
+    # ===================================================
+    
+    # 最终移除首尾可能残余的空格
     return text.strip()
 
 def get_beijing_time_str():
@@ -125,10 +128,9 @@ def fetch_weibo_top(n=15):
         data = j.get("data", [])
         items = []
         for it in data:
-            title = clean_text(it.get("title"))
+            title = clean_text(it.get("title")) # 应用 clean_text (移除空格)
             link = it.get("url", "")
             if title and link:
-                # 抓取时使用 clean_text 确保标题干净
                 items.append({"title": title, "url": link.strip()})
             if len(items) >= n:
                 break
@@ -152,7 +154,7 @@ def fetch_bilibili_top(n=15):
             cand = data.get("list") or data.get("archives") or data.get("result") or []
         items = []
         for it in cand:
-            title = clean_text(it.get("title") or it.get("name"))
+            title = clean_text(it.get("title") or it.get("name")) # 应用 clean_text (移除空格)
             bvid = it.get("bvid") or it.get("bvidStr")
             url = ""
             if bvid:
@@ -160,7 +162,6 @@ def fetch_bilibili_top(n=15):
             else:
                 url = it.get("arcurl") or it.get("url") or ""
             if title:
-                # 抓取时使用 clean_text 确保标题干净
                 items.append({"title": title, "url": url.strip()})
             if len(items) >= n:
                 break
@@ -173,7 +174,7 @@ def fetch_bilibili_top(n=15):
 # --- Markdown 构建器 (已增强健壮性，新增转义和优化换行) ---
 
 def build_final_markdown(weibo, bilibili):
-    """构建最终发送的合并 Markdown 报告（增强数据健壮性，并对标题进行转义）"""
+    """构建最终发送的合并 Markdown 报告（已集成标题空格移除）"""
     parts = []
     parts.append("关键字：热点\n")
     
@@ -190,11 +191,10 @@ def build_final_markdown(weibo, bilibili):
                 continue
             
             # --- Markdown 字符转义 ---
-            # 转义 Markdown 敏感字符 [ ] *，防止标题内容破坏链接结构
+            # 转义 Markdown 敏感字符 [ ] *
             title = title.replace('[', '\[').replace(']', '\]').replace('*', '\*')
             
-            # --- 优化换行：确保链接紧凑，使用 \n 确保解析一致性 ---
-            # 移除行末多余空格，并以 \n 结束
+            # --- 优化换行 ---
             parts.append(f"{i}. [{title}]({url})\n") 
     
     # B站部分
@@ -210,11 +210,10 @@ def build_final_markdown(weibo, bilibili):
                 continue
                 
             # --- Markdown 字符转义 ---
-            # 转义 Markdown 敏感字符 [ ] *，防止标题内容破坏链接结构
+            # 转义 Markdown 敏感字符 [ ] *
             title = title.replace('[', '\[').replace(']', '\]').replace('*', '\*')
 
-            # --- 优化换行：确保链接紧凑，使用 \n 确保解析一致性 ---
-            # 移除行末多余空格，并以 \n 结束
+            # --- 优化换行 ---
             parts.append(f"{i}. [{title}]({url})\n")
     
     parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
