@@ -29,15 +29,19 @@ HEADERS = {
 # --- 辅助函数 ---
 
 def clean_text(text):
-    """清洗标题文本，去掉零宽字符、不可见字符等"""
+    """
+    清洗标题文本，去掉零宽字符、不可见字符等，并确保最终首尾无空格。
+    **已优化**：替换连续空格为单个空格。
+    """
     if not text:
         return ""
     # 去掉零宽空格、特殊控制符
     text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
     # 去掉其他不可见控制字符
     text = ''.join(c for c in text if c.isprintable())
-    # 替换连续空格为一个
+    # 替换连续空格为一个（保留内容中的必要空格）
     text = re.sub(r'\s+', ' ', text)
+    # 最终移除首尾空格
     return text.strip()
 
 def get_beijing_time_str():
@@ -124,6 +128,7 @@ def fetch_weibo_top(n=15):
             title = clean_text(it.get("title"))
             link = it.get("url", "")
             if title and link:
+                # 抓取时使用 clean_text 确保标题干净
                 items.append({"title": title, "url": link.strip()})
             if len(items) >= n:
                 break
@@ -155,6 +160,7 @@ def fetch_bilibili_top(n=15):
             else:
                 url = it.get("arcurl") or it.get("url") or ""
             if title:
+                # 抓取时使用 clean_text 确保标题干净
                 items.append({"title": title, "url": url.strip()})
             if len(items) >= n:
                 break
@@ -183,11 +189,12 @@ def build_final_markdown(weibo, bilibili):
                 print(f"Warning: Weibo item {i} skipped due to missing title/URL: {it}")
                 continue
             
-            # --- 新增：Markdown 字符转义 ---
-            # 转义 Markdown 敏感字符 [ ] *
+            # --- Markdown 字符转义 ---
+            # 转义 Markdown 敏感字符 [ ] *，防止标题内容破坏链接结构
             title = title.replace('[', '\[').replace(']', '\]').replace('*', '\*')
             
-            # --- 优化换行：移除行末双空格，改用 \n 确保解析一致性 ---
+            # --- 优化换行：确保链接紧凑，使用 \n 确保解析一致性 ---
+            # 移除行末多余空格，并以 \n 结束
             parts.append(f"{i}. [{title}]({url})\n") 
     
     # B站部分
@@ -202,11 +209,12 @@ def build_final_markdown(weibo, bilibili):
                 print(f"Warning: Bilibili item {i} skipped due to missing title/URL: {it}")
                 continue
                 
-            # --- 新增：Markdown 字符转义 ---
-            # 转义 Markdown 敏感字符 [ ] *
+            # --- Markdown 字符转义 ---
+            # 转义 Markdown 敏感字符 [ ] *，防止标题内容破坏链接结构
             title = title.replace('[', '\[').replace(']', '\]').replace('*', '\*')
 
-            # --- 优化换行：移除行末双空格，改用 \n 确保解析一致性 ---
+            # --- 优化换行：确保链接紧凑，使用 \n 确保解析一致性 ---
+            # 移除行末多余空格，并以 \n 结束
             parts.append(f"{i}. [{title}]({url})\n")
     
     parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
