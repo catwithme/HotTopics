@@ -1,7 +1,7 @@
 # fetch.py
-# 使用 XXAPI 获取微博热搜 + B站热门 → 推送钉钉  
+# 使用 XXAPI 获取微博热搜 + 百度热搜 → 推送钉钉  
 # 钉钉关键词：热点  
-# 依赖：requests, time
+# 20251207最终版本，已修复偶发格式问题，并暂停 B站 推送
 # --- 核心改进：二分法审查、双 Webhook、异常推送、延迟控制、Markdown 健壮性 ---
 
 import os
@@ -9,7 +9,8 @@ import time
 import datetime
 import re
 import requests
-import json # 确保导入 json 用于解析钉钉响应
+import json 
+import sys # 导入 sys 避免在 fetch 失败时继续执行
 
 # --- 配置与常量 ---
 DINGTALK_WEBHOOK = os.environ.get("DINGTALK_WEBHOOK")
@@ -46,7 +47,7 @@ def get_beijing_time_str():
     bj_now = utc_now + datetime.timedelta(hours=8)
     return bj_now.strftime("%Y-%m-%d %H:%M:%S")
 
-# --- 消息发送核心逻辑 ---
+# --- 消息发送核心逻辑 (不变) ---
 
 def _send_request(webhook_url, payload, is_test=False):
     """通用发送请求逻辑，用于生产和测试 Webhook"""
@@ -106,17 +107,16 @@ def send_exception_report(title, error_detail):
     # 强制使用生产 webhook 进行异常报告
     return send_to_dingtalk(DINGTALK_WEBHOOK, markdown_text, title=f"⚠️ {title}", is_test=False)
 
-# --- 数据抓取 (保持不变) ---
+
+# --- 数据抓取 (B站代码保留，但 main 不会调用) ---
 
 def fetch_weibo_top(n=15):
-    # ... (您的 fetch_weibo_top 代码)
     url = "https://v2.xxapi.cn/api/weibohot"
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         r.raise_for_status()
         j = r.json()
         if j.get("code") != 200 or "data" not in j:
-            # 捕获 API 返回的业务错误
             raise ValueError(f"Weibo API returned error: {j}")
         data = j.get("data", [])
         items = []
@@ -129,11 +129,10 @@ def fetch_weibo_top(n=15):
                 break
         return items
     except Exception as e:
-        # 将异常抛出到 main 函数中统一处理
         raise Exception(f"fetch_weibo_top error: {repr(e)}")
 
 def fetch_bilibili_top(n=15):
-    # ... (您的 fetch_bilibili_top 代码)
+    """B站抓取函数：已保留代码，但目前在 main() 函数中被跳过"""
     api = "https://api.bilibili.com/x/web-interface/popular?ps=50"
     try:
         r = requests.get(api, headers=HEADERS, timeout=15)
@@ -154,59 +153,82 @@ def fetch_bilibili_top(n=15):
                 url = "https://www.bilibili.com/video/" + bvid
             else:
                 url = it.get("arcurl") or it.get("url") or ""
-            # 注意：此处在抓取时已经有一个基础的 title 检查，但 final_markdown 还会做二次检查
             if title:
                 items.append({"title": title, "url": url.strip()})
             if len(items) >= n:
                 break
         return items
     except Exception as e:
-        # 将异常抛出到 main 函数中统一处理
         raise Exception(f"fetch_bilibili_top error: {repr(e)}")
 
+def fetch_baidu_top(n=15):
+    """获取百度热搜榜"""
+    url = "https://v2.xxapi.cn/api/baiduhot" 
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        j = r.json()
+        if j.get("code") != 200 or "data" not in j:
+            raise ValueError(f"Baidu API returned error: {j}")
+            
+        data = j.get("data", [])
+        items = []
+        for it in data:
+            title = clean_text(it.get("title") or it.get("keyword")) 
+            link = it.get("url", "") 
+            
+            # 构造百度搜索链接
+            if not link and it.get("keyword"):
+                 link = f"https://www.baidu.com/s?wd={requests.utils.quote(it['keyword'])}"
 
-# --- Markdown 构建器 (已增强健壮性) ---
+            if title and link:
+                items.append({"title": title, "url": link.strip()})
+            if len(items) >= n:
+                break
+        return items
+    except Exception as e:
+        raise Exception(f"fetch_baidu_top error: {repr(e)}")
 
-def build_final_markdown(weibo, bilibili):
-    """构建最终发送的合并 Markdown 报告（增强数据健壮性）"""
+
+# --- Markdown 构建器 (已增强健壮性，只接受微博和百度) ---
+
+def _build_platform_section(items, platform_name):
+    """通用构建单个平台的 Markdown 列表，包含格式健壮性处理"""
+    section_parts = []
+    if items:
+        section_parts.append(f"\n# {platform_name}（Top {len(items)}）\n")
+        for i, it in enumerate(items, 1):
+            title = it.get('title', '')
+            url = it.get('url', '').strip()
+
+            # 1. 标题转义：将 [ 和 ] 转义，防止破坏 Markdown 链接结构（解决偶发格式问题）
+            safe_title = title.replace('[', '\\[').replace(']', '\\]')
+
+            line = ""
+            # 2. 链接验证：如果 URL 缺失，则不生成链接，只显示标题
+            if safe_title and url:
+                line = f"{i}. [{safe_title}]({url})  "
+            elif safe_title:
+                line = f"{i}. {safe_title}  "
+            else:
+                continue # 排除无标题的条目
+
+            section_parts.append(line)
+    return section_parts
+
+def build_final_markdown(weibo, baidu):
+    """构建最终发送的合并 Markdown 报告（仅包含微博和百度）"""
     parts = []
     parts.append("关键字：热点\n")
     
     # 微博部分
-    if weibo:
-        parts.append("# 微博热搜（Top {}）\n".format(len(weibo)))
-        for i, it in enumerate(weibo, 1):
-            title = it.get('title')
-            url = it.get('url')
-            
-            # --- 核心健壮性检查 ---
-            if not title or not url:
-                # 打印警告，并跳过该条不完整的条目，避免格式错误
-                print(f"Warning: Weibo item {i} skipped due to missing title/URL: {it}")
-                continue
-            # --------------------
-            
-            # 使用获取到的 title 和 url 变量进行渲染
-            parts.append(f"{i}. [{title}]({url})  ")
+    parts.extend(_build_platform_section(weibo, "微博热搜"))
     
-    # B站部分
-    if bilibili:
-        parts.append("\n# B站热榜（Top {}）\n".format(len(bilibili)))
-        for i, it in enumerate(bilibili, 1):
-            title = it.get('title')
-            url = it.get('url')
-            
-            # --- 核心健壮性检查 ---
-            if not title or not url:
-                # 打印警告，并跳过该条不完整的条目，避免格式错误
-                print(f"Warning: Bilibili item {i} skipped due to missing title/URL: {it}")
-                continue
-            # --------------------
-
-            # 使用获取到的 title 和 url 变量进行渲染
-            parts.append(f"{i}. [{title}]({url})  ")
+    # 百度部分
+    parts.extend(_build_platform_section(baidu, "百度热搜"))
     
-    parts.append("\n> 更新时间：{}".format(get_beijing_time_str()))
+    parts.append("\n\n> 更新时间：{}".format(get_beijing_time_str()))
+    
     return "\n\n".join(parts)
 
 
@@ -215,10 +237,10 @@ def build_audit_markdown(items, platform_name):
     parts = [f"## [AUDIT] {platform_name} ({len(items)} 条)"]
     for idx, it in enumerate(items, 1):
         # 仅显示标题，不显示序号，保持简洁
-        parts.append(f"- {it['title']}") 
+        parts.append(f"- {it['title']}")  
     return "\n".join(parts)
 
-# --- 核心审查：二分法逻辑 ---
+# --- 核心审查：二分法逻辑 (不变) ---
 
 def test_content_audit(items, platform_name, test_webhook_url):
     
@@ -265,61 +287,65 @@ def test_content_audit(items, platform_name, test_webhook_url):
     print(f"--- {platform_name} 审查完成：保留 {len(safe_items)} 条 ---")
     return safe_items
 
-# --- 主逻辑 ---
+
+# --- 主逻辑 (已移除 B站相关调用) ---
 
 def main():
     
     # 1. 数据抓取与异常处理
     try:
         weibo = fetch_weibo_top(15)
-        bilibili = fetch_bilibili_top(15)
+        # bilibili = fetch_bilibili_top(15) # B站抓取已暂停
+        baidu = fetch_baidu_top(15)
+        bilibili = [] # 确保 bilibili 变量存在且为空，防止后续代码报错
     except Exception as e:
-        # 抓取阶段发生严重异常
         error_msg = f"数据抓取失败: {repr(e)}"
         print(f"❌ {error_msg}")
         send_exception_report("核心数据抓取失败", error_msg)
-        return # 停止后续流程
+        return
     
-    total_fetched = len(weibo) + len(bilibili)
+    # 注意：计算总数时，不计入 B站 (bilibili)
+    total_fetched = len(weibo) + len(baidu)
     print(f"Fetched weibo items: {len(weibo)}")
-    print(f"Fetched bilibili items: {len(bilibili)}")
+    # print(f"Fetched bilibili items: {len(bilibili)}") # B站打印已暂停
+    print(f"Fetched baidu items: {len(baidu)}") 
     
     if total_fetched == 0:
-        # 没有数据，推送报告并停止
         report_msg = "本次运行未抓取到任何有效热搜数据。"
         print(f"⚠️ {report_msg}")
         send_exception_report("热搜数据缺失", report_msg)
         return
 
     # 2. 内容审查（二分法）
-    
-    # 检查测试 Webhook 是否存在
     if DINGTALK_WEBHOOK_TEST:
         safe_weibo = test_content_audit(weibo, "微博热搜", DINGTALK_WEBHOOK_TEST)
-        safe_bilibili = test_content_audit(bilibili, "B站热榜", DINGTALK_WEBHOOK_TEST)
+        # safe_bilibili = test_content_audit(bilibili, "B站热榜", DINGTALK_WEBHOOK_TEST) # B站审查已暂停
+        safe_baidu = test_content_audit(baidu, "百度热搜", DINGTALK_WEBHOOK_TEST)
     else:
-        # 如果没有测试 Webhook，则跳过审查，使用原始数据 (存在安全风险)
         print("Warning: DINGTALK_WEBHOOK_TEST is missing. Skipping content audit.")
         safe_weibo = weibo
-        safe_bilibili = bilibili
+        # safe_bilibili = bilibili # B站审查已暂停
+        safe_baidu = baidu
         
-    total_safe = len(safe_weibo) + len(safe_bilibili)
-    print(f"\nFinal safe items: {total_safe} (Weibo: {len(safe_weibo)}, Bili: {len(safe_bilibili)})")
+    # 注意：计算最终安全总数时，不计入 B站 (bilibili)
+    total_safe = len(safe_weibo) + len(safe_baidu)
+    print(f"\nFinal safe items: {total_safe} (Weibo: {len(safe_weibo)}, Baidu: {len(safe_baidu)})")
     
     if total_safe == 0:
-        # 抓到数据但全部被审查剔除
         report_msg = f"本次抓取 {total_fetched} 条，但全部被内容审查系统剔除。请检查敏感词汇。"
         print(f"⚠️ {report_msg}")
         send_exception_report("内容审查失败", report_msg)
         return
 
     # 3. 最终合并与推送
-    final_md = build_final_markdown(safe_weibo, safe_bilibili)
+    # 仅传递 safe_weibo 和 safe_baidu
+    final_md = build_final_markdown(safe_weibo, safe_baidu)
     print("\n=== Generated FINAL Markdown Preview ===")
     print(final_md[:3000])
 
     print("\n--- 开始最终推送（使用生产 Webhook）---")
-    ok = send_to_dingtalk(DINGTALK_WEBHOOK, final_md, title="微博 + B站 热搜（Top）", is_test=False)
+    # 更新标题为“微博 + 百度 热搜”
+    ok = send_to_dingtalk(DINGTALK_WEBHOOK, final_md, title="微博 + 百度 热搜", is_test=False) 
     
     if not ok:
         print("❌ Failed to send final DingTalk message")
