@@ -168,7 +168,7 @@ def _build_platform_section(items, platform_name, mode):
                 continue
             url = it["url"]
             safe_title = title.replace('[', '\\[').replace(']', '\\]')
-            section_parts.append(f"{idx}. [{safe_title}]({url})\n")
+            section_parts.append(f"{idx}. [{safe_title}]({url})\n\n\n")
             count += 1
             if count >= 15:
                 break
@@ -187,7 +187,7 @@ def _build_platform_section(items, platform_name, mode):
 
 def build_final_markdown(weibo, baidu):
     parts = []
-    parts.append(f"关键字：热点 {get_beijing_time_str()}\n")
+    parts.append(f"关键字：热点 | {get_beijing_time_str()}\n")
 
     parts.extend(_build_platform_section(weibo, "微博热搜", "weibo"))
     parts.extend(_build_platform_section(baidu, "百度热搜", "baidu"))
