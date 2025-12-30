@@ -168,7 +168,7 @@ def _build_platform_section(items, platform_name, mode):
                 continue
             url = it["url"]
             safe_title = title.replace('[', '\\[').replace(']', '\\]')
-            section_parts.append(f"{idx}. [{safe_title}]({url})\n\n&nbsp;\n")
+            section_parts.append(f"{idx}. [{safe_title}]({url})\n&nbsp;\n")
             count += 1
             if count >= 15:
                 break
@@ -178,7 +178,7 @@ def _build_platform_section(items, platform_name, mode):
             title = it["title"]
             url = it["url"]
             safe_title = title.replace('[', '\\[').replace(']', '\\]')
-            section_parts.append(f"{count + 1}. [{safe_title}]({url})\n\n&nbsp;\n")
+            section_parts.append(f"{count + 1}. [{safe_title}]({url})\n&nbsp;\n")
             count += 1
             if count >= 15:
                 break
