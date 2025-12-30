@@ -189,8 +189,8 @@ def build_final_markdown(weibo, baidu):
     parts = []
     parts.append(f"关键字：热点 ｜ {get_beijing_time_str()}\n")
 
-    parts.extend(_build_platform_section(weibo, "微博热搜", "weibo"))
-    parts.extend(_build_platform_section(baidu, "百度热搜", "baidu"))
+    parts.extend(_build_platform_section(weibo, "微博热搜（Top 15）", "weibo"))
+    parts.extend(_build_platform_section(baidu, "百度热搜（Top 15）", "baidu"))
 
     parts.append(f"\n> 更新时间：{get_beijing_time_str()}")
     return "\n".join(parts)
