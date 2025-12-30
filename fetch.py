@@ -1,7 +1,3 @@
-# fetch.py
-# 使用 XXAPI 获取微博热搜 + 百度热搜 → 推送钉钉 
-# 20251229 最终优化版：微博去空格补齐、百度去首条、间距优化、头部时间化
-
 import os
 import time
 import datetime
@@ -26,7 +22,6 @@ HEADERS = {
 # --- 辅助函数 ---
 
 def clean_text(text):
-    """清洗标题文本，去掉零宽字符等"""
     if not text:
         return ""
     text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
@@ -35,8 +30,8 @@ def clean_text(text):
     return text.strip()
 
 def get_beijing_time_str():
-    """获取北京时间字符串"""
-    bj_now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+    utc_now = datetime.datetime.utcnow()
+    bj_now = utc_now + datetime.timedelta(hours=8)
     return bj_now.strftime("%Y-%m-%d %H:%M:%S")
 
 # --- 消息发送核心逻辑 ---
@@ -48,12 +43,10 @@ def _send_request(webhook_url, payload, is_test=False):
         r = requests.post(webhook_url, json=payload, timeout=10)
         response_json = r.json()
         errcode = response_json.get("errcode")
-        status_msg = f"Status: {r.status_code}, Error: {errcode} - {response_json.get('errmsg')}"
-        print(f"[{'TEST' if is_test else 'PROD'}] {payload['markdown']['title']}: {status_msg}")
+        print(f"[{'TEST' if is_test else 'PROD'}] {payload['markdown']['title']}: {errcode}")
         return errcode == 0, response_json
     except Exception as e:
-        print(f"send_request error: {repr(e)}")
-        return False, {"errcode": -3, "errmsg": f"Network Error: {repr(e)}"}
+        return False, {"errcode": -3, "errmsg": repr(e)}
 
 def send_to_dingtalk(webhook_url, markdown_text, title="热搜更新", is_test=False):
     payload = {
@@ -73,18 +66,16 @@ def send_exception_report(title, error_detail):
 # --- 数据抓取 ---
 
 def fetch_weibo_top(n=15):
-    """获取微博热搜：跳过含空格标题并补齐至 n 条"""
     url = "https://v2.xxapi.cn/api/weibohot"
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         r.raise_for_status()
-        j = r.json()
-        data = j.get("data", [])
+        data = r.json().get("data", [])
         items = []
         for it in data:
             title = clean_text(it.get("title"))
             link = it.get("url", "")
-            # 逻辑优化：标题含空格则跳过，序号顺延
+            # 修改点 1：标题含空格则跳过，并补齐 15 条
             if not title or ' ' in title:
                 continue
             if title and link:
@@ -96,14 +87,12 @@ def fetch_weibo_top(n=15):
         raise Exception(f"fetch_weibo_top error: {repr(e)}")
 
 def fetch_baidu_top(n=15):
-    """获取百度热搜：去掉第一条置顶，取后续 15 条"""
     url = "https://v2.xxapi.cn/api/baiduhot" 
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         r.raise_for_status()
-        j = r.json()
-        data = j.get("data", [])
-        # 逻辑优化：跳过第一条，截取后续 n 条
+        data = r.json().get("data", [])
+        # 修改点 2：去掉第一条置顶，取后续 15 条
         target_data = data[1:n+1] 
         items = []
         for it in target_data:
@@ -120,39 +109,31 @@ def fetch_baidu_top(n=15):
 # --- Markdown 构建器 ---
 
 def _build_platform_section(items, platform_name):
-    """构建板块列表，增加行间距防止误触"""
     section_parts = []
     if items:
         section_parts.append(f"\n### {platform_name}\n")
         for i, it in enumerate(items, 1):
-            title = it.get('title', '')
+            title = it.get('title', '').replace('[', '\\[').replace(']', '\\]')
             url = it.get('url', '').strip()
-            safe_title = title.replace('[', '\\[').replace(']', '\\]')
-
-            # 优化点：使用 \n\n 增大行间距，取消标题加粗
-            if safe_title and url:
-                line = f"{i}. [{safe_title}]({url}) \n\n"
-            elif safe_title:
-                line = f"{i}. {safe_title} \n\n"
-            else:
-                continue
-            section_parts.append(line)
+            # 修改点 3：取消加粗，并在行尾加双换行以增大间距
+            if title and url:
+                line = f"{i}. [{title}]({url}) \n\n"
+                section_parts.append(line)
     return section_parts
 
 def build_final_markdown(weibo, baidu):
-    """构建最终报告，头部改时间"""
     parts = []
-    # 头部：取消“关键字：热点”，改为时间（确保包含关键词“热搜”以适配机器人设置）
-    now_time = get_beijing_time_str()
-    parts.append(f"#### 📅 实时热搜监控\n**更新时间：{now_time}**\n")
+    curr_time = get_beijing_time_str()
+    # 修改点 4：头部保留关键字并增加时间
+    parts.append(f"关键字：热点 | 更新时间：{curr_time}\n")
     
     parts.extend(_build_platform_section(weibo, "微博热搜"))
     parts.extend(_build_platform_section(baidu, "百度热搜"))
     
-    parts.append(f"\n---\n> 数据更新时间：{now_time}")
+    parts.append(f"\n---\n> 最后更新：{curr_time}")
     return "".join(parts)
 
-# --- 审查逻辑 (保留) ---
+# --- 核心审查：二分法逻辑 ---
 
 def test_content_audit(items, platform_name, test_webhook_url):
     def audit_recursive(subitems, depth=0):
@@ -167,42 +148,28 @@ def test_content_audit(items, platform_name, test_webhook_url):
         return audit_recursive(subitems[:mid], depth + 1) + audit_recursive(subitems[mid:], depth + 1)
 
     if not test_webhook_url: return items
-    print(f"开始审查 {platform_name}...")
+    print(f"审查 {platform_name}...")
     return audit_recursive(items)
 
 # --- 主逻辑 ---
 
 def main():
-    print("--- 启动抓取任务 ---")
     try:
-        # 1. 抓取微博(补齐15)和百度(去首取15)
         weibo = fetch_weibo_top(15)
         baidu = fetch_baidu_top(15)
-        print(f"抓取成功: 微博 {len(weibo)}条, 百度 {len(baidu)}条")
     except Exception as e:
-        error_msg = f"抓取失败: {repr(e)}"
-        print(f"❌ {error_msg}")
-        send_exception_report("核心抓取异常", error_msg)
+        send_exception_report("数据抓取失败", repr(e))
         return
 
-    # 2. 内容审查
     if DINGTALK_WEBHOOK_TEST:
         safe_weibo = test_content_audit(weibo, "微博热搜", DINGTALK_WEBHOOK_TEST)
         safe_baidu = test_content_audit(baidu, "百度热搜", DINGTALK_WEBHOOK_TEST)
     else:
         safe_weibo, safe_baidu = weibo, baidu
         
-    # 3. 推送
     if safe_weibo or safe_baidu:
         final_md = build_final_markdown(safe_weibo, safe_baidu)
-        # title 也要包含关键词以防万一
-        ok = send_to_dingtalk(DINGTALK_WEBHOOK, final_md, title="微博 + 百度 热搜") 
-        if ok:
-            print("✅ 消息推送成功")
-        else:
-            print("❌ 消息推送失败，请检查机器人关键词设置（需包含“热搜”）")
-    else:
-        print("⚠️ 无安全数据可推送")
+        send_to_dingtalk(DINGTALK_WEBHOOK, final_md, title="微博 + 百度 热搜") 
 
 if __name__ == "__main__":
     main()
